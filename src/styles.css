@@ -1,0 +1,119 @@
+:root {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  color: #13203a;
+  background: radial-gradient(circle at top left, #f0f7ff 0%, #ffffff 55%, #e9f5ec 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+a {
+  color: #0f4a9f;
+  text-decoration: none;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  background: #0f4a9f;
+  color: #ffffff;
+}
+
+.brand {
+  font-weight: 700;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.nav-links a,
+.link-button {
+  color: #ffffff;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.content {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.card {
+  background: #ffffff;
+  border: 1px solid #dce7f7;
+  border-radius: 12px;
+  padding: 1rem 1.2rem;
+  box-shadow: 0 8px 20px rgb(15 74 159 / 0.08);
+}
+
+.stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.form-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+label {
+  display: grid;
+  gap: 0.4rem;
+}
+
+input {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #b8c8e0;
+  border-radius: 8px;
+}
+
+button {
+  width: fit-content;
+  padding: 0.6rem 1rem;
+  border: 0;
+  border-radius: 8px;
+  color: #ffffff;
+  background: #0f4a9f;
+  cursor: pointer;
+}
+
+.route-list,
+.point-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.route-list li,
+.point-list li {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.error {
+  color: #a82525;
+}
+
+.map-container {
+  width: 100%;
+  height: 380px;
+  border-radius: 10px;
+  overflow: hidden;
+}
