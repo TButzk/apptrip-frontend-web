@@ -5,8 +5,7 @@ import { login } from "services/authService";
 
 export function LoginPage() {
   const navigate = useNavigate();
-  const { setToken } = useAuth();
-
+  const { setSession } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -14,61 +13,31 @@ export function LoginPage() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
     setLoading(true);
     setError(null);
-
     try {
-      const response = await login({ email, password });
-      setToken(response.token);
-      navigate("/routes");
+      setSession(await login({ email, password }));
+      navigate("/");
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Erro ao autenticar.";
-      setError(message);
+      setError(err instanceof Error ?err.message : "Erro ao autenticar.");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <section className="card login-card">
+    <section className="card login-card profile-hero">
+      <p className="eyebrow">Conta</p>
       <h1>Entrar</h1>
-      <p>Use seu email e senha cadastrados no backend.</p>
-
+      <p>Entre para criar rotas e participar dos pontos compartilhados.</p>
       <form onSubmit={handleSubmit} className="form-grid">
-        <label>
-          Email
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            required
-          />
-        </label>
-
-        <label>
-          Senha
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            required
-          />
-        </label>
-
-        {error && <p className="error">{error}</p>}
-
-        <button type="submit" disabled={loading}>
-          {loading ? "Entrando..." : "Entrar"}
-        </button>
+        <label>E-mail<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
+        <label>Senha<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
+        {error ?<p className="error">{error}</p> : null}
+        <button type="submit" disabled={loading}>{loading ?"Entrando..." : "Entrar"}</button>
       </form>
-
-      <p style={{ marginTop: "1rem", textAlign: "center" }}>
-        Não tem conta? <Link to="/register">Criar conta</Link>
-      </p>
-      <p style={{ textAlign: "center" }}>
-        <Link to="/routes">Continuar sem conta</Link>
-      </p>
+      <p className="centered-copy">Não tem conta?<Link to="/register">Criar conta</Link></p>
+      <p className="centered-copy"><Link to="/">Continuar sem conta</Link></p>
     </section>
   );
 }

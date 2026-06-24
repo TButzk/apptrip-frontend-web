@@ -1,26 +1,23 @@
+import axios from "axios";
 import { http } from "./http";
 import type { DtoResponse } from "types/api";
 import type { AuthenticationDto, CreateUserDto, UserDto, UserLoginDto } from "types/domain";
 
-export async function register(payload: CreateUserDto): Promise<UserDto> {
-  const { data } = await http.post<DtoResponse<UserDto>>("/users-auth", payload);
+export const register = (payload: CreateUserDto) =>
+  requestAuth<UserDto>("/users-auth", payload, "Não foi possível criar a conta.");
+export const login = (payload: AuthenticationDto) =>
+  requestAuth<UserLoginDto>("/users-auth/login", payload, "Não foi possível autenticar.");
 
-  if (!data.data) {
-    throw new Error(data.error ?? "Nao foi possivel criar a conta.");
+async function requestAuth<T>(url: string, payload: unknown, fallback: string): Promise<T> {
+  try {
+    const { data } = await http.post<DtoResponse<T>>(url, payload);
+    if (!data.data) throw new Error(data.error ?? fallback);
+    return data.data;
+  } catch (error) {
+    if (error instanceof Error && !axios.isAxiosError(error)) throw error;
+    if (axios.isAxiosError<DtoResponse<T>>(error)) {
+      throw new Error(error.response?.data?.error ?? fallback);
+    }
+    throw new Error(fallback);
   }
-
-  return data.data;
-}
-
-export async function login(payload: AuthenticationDto): Promise<UserLoginDto> {
-  const { data } = await http.post<DtoResponse<UserLoginDto>>(
-    "/users-auth/login",
-    payload
-  );
-
-  if (!data.data) {
-    throw new Error(data.error ?? "Nao foi possivel autenticar.");
-  }
-
-  return data.data;
 }

@@ -1,53 +1,68 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { RouteFeedCard } from "components/RouteFeedCard";
 import { listRoutes } from "services/routesService";
 import type { RouteDto } from "types/domain";
+
+const FILTERS = ["Tudo", "Trilhas", "Ciclismo", "Corrida"] as const;
 
 export function RoutesPage() {
   const [routes, setRoutes] = useState<RouteDto[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [activeFilter, setActiveFilter] = useState<(typeof FILTERS)[number]>("Tudo");
+  const [likedRoutes, setLikedRoutes] = useState<Set<string>>(() => new Set());
+  const [savedRoutes, setSavedRoutes] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
-    async function fetchRoutes() {
-      try {
-        const data = await listRoutes(0, 30);
-        setRoutes(data);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Erro ao carregar rotas.";
-        setError(message);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    fetchRoutes();
+    listRoutes().then(setRoutes).catch(() => setRoutes([])).finally(() => setLoading(false));
   }, []);
 
-  if (loading) {
-    return <p>Carregando rotas...</p>;
-  }
-
-  if (error) {
-    return <p className="error">{error}</p>;
-  }
-
-  if (routes.length === 0) {
-    return <p>Nenhuma rota encontrada.</p>;
-  }
-
   return (
-    <section className="card">
-      <h1>Rotas Publicadas</h1>
-      <ul className="route-list">
-        {routes.map((route) => (
-          <li key={route.id}>
-            <Link to={`/routes/${route.id}`}>{route.name}</Link>
-            <small>Status: {route.status}</small>
-            <small>{route.placeIds.length} ponto(s)</small>
-          </li>
+    <section className="explore-shell">
+      <header className="explore-header">
+        <h1>Explore novas rotas</h1>
+        <p>Descubra as melhores trilhas e caminhos registrados pela comunidade.</p>
+      </header>
+
+      <div className="explore-filter-bar" role="group" aria-label="Filtrar rotas">
+        {FILTERS.map((filter) => (
+          <button
+            key={filter}
+            type="button"
+            className={filter === activeFilter ? "active" : ""}
+            onClick={() => setActiveFilter(filter)}
+          >
+            {filter}
+          </button>
         ))}
-      </ul>
+      </div>
+
+      {loading ? <article className="explore-route-card skeleton-card"><div className="explore-route-map-skeleton" /></article> : null}
+      {!loading && routes.length === 0 ? (
+        <article className="empty-state">
+          <strong>Ainda não há rotas publicadas.</strong>
+          <p>Quando alguém publicar uma rota, ela aparecerá aqui.</p>
+        </article>
+      ) : null}
+
+      <div className="explore-feed">
+        {routes.map((route) => (
+          <RouteFeedCard
+            key={route.id}
+            route={route}
+            liked={likedRoutes.has(route.id)}
+            saved={savedRoutes.has(route.id)}
+            onToggleLike={() => setLikedRoutes((current) => toggleSet(current, route.id))}
+            onToggleSave={() => setSavedRoutes((current) => toggleSet(current, route.id))}
+          />
+        ))}
+      </div>
     </section>
   );
+}
+
+function toggleSet(current: Set<string>, id: string) {
+  const next = new Set(current);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
 }

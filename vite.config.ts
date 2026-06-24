@@ -15,5 +15,9 @@ export default defineConfig({
       types: path.resolve(__dirname, "src/types"),
       utils: path.resolve(__dirname, "src/utils")
     }
+  },
+  test: {
+    environment: "jsdom",
+    setupFiles: "./src/test/setup.ts"
   }
 });

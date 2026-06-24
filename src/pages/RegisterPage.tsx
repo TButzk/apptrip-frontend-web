@@ -1,13 +1,11 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "hooks/useAuth";
-import { register } from "services/authService";
-import { login } from "services/authService";
+import { login, register } from "services/authService";
 
 export function RegisterPage() {
   const navigate = useNavigate();
-  const { setToken } = useAuth();
-
+  const { setSession } = useAuth();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -16,69 +14,31 @@ export function RegisterPage() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
     setLoading(true);
     setError(null);
-
     try {
       await register({ name, email, password });
-      const session = await login({ email, password });
-      setToken(session.token);
-      navigate("/routes");
+      setSession(await login({ email, password }));
+      navigate("/");
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Erro ao criar conta.";
-      setError(message);
+      setError(err instanceof Error ?err.message : "Erro ao criar conta.");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <section className="card login-card">
+    <section className="card login-card profile-hero">
+      <p className="eyebrow">Conta</p>
       <h1>Criar conta</h1>
-
       <form onSubmit={handleSubmit} className="form-grid">
-        <label>
-          Nome
-          <input
-            type="text"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            required
-          />
-        </label>
-
-        <label>
-          Email
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            required
-          />
-        </label>
-
-        <label>
-          Senha
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            required
-            minLength={6}
-          />
-        </label>
-
-        {error && <p className="error">{error}</p>}
-
-        <button type="submit" disabled={loading}>
-          {loading ? "Criando conta..." : "Criar conta"}
-        </button>
+        <label>Nome<input value={name} onChange={(e) => setName(e.target.value)} required maxLength={120} /></label>
+        <label>E-mail<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
+        <label>Senha<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} maxLength={72} /></label>
+        {error ?<p className="error">{error}</p> : null}
+        <button type="submit" disabled={loading}>{loading ?"Criando conta..." : "Criar conta"}</button>
       </form>
-
-      <p style={{ marginTop: "1rem", textAlign: "center" }}>
-        Já tem conta? <Link to="/login">Entrar</Link>
-      </p>
+      <p className="centered-copy">Já tem conta?<Link to="/login">Entrar</Link></p>
     </section>
   );
 }
