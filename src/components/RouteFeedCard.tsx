@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { MaterialIcon } from "components/MaterialIcon";
 import { RouteMap } from "components/RouteMap";
 import { getPlaceSocial, getRoutePlaces } from "services/routesService";
 import type { PlaceDto, RouteDto } from "types/domain";
@@ -115,7 +116,7 @@ export function RouteFeedCard({ route, liked, saved, onToggleLike, onToggleSave 
               <p className="explore-route-location">{location}</p>
             </div>
             <div className="explore-route-thumb" aria-hidden="true">
-              {!loading ? <RouteMap points={places} preview compact /> : null}
+              {!loading ? <MaterialIcon name="map" size={22} className="explore-route-thumb-icon" /> : null}
             </div>
           </div>
 
@@ -182,7 +183,7 @@ export function RouteFeedCard({ route, liked, saved, onToggleLike, onToggleSave 
                 onToggleSave();
               }}
             >
-              {saved ? "🔖" : "⌑"}
+              <MaterialIcon name="bookmark" filled={saved} size={20} />
             </button>
           </div>
         </div>

@@ -5,6 +5,18 @@ import path from "node:path";
 export default defineConfig({
   base: process.env.VITE_BASE_PATH ?? "/apptrip-react/",
   plugins: [react()],
+  server: {
+    proxy: {
+      "/map-tiles": {
+        target: "https://tile.openstreetmap.org",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/map-tiles/, ""),
+        headers: {
+          "User-Agent": "AppTrip/1.0 (+https://github.com/AppTrip)"
+        }
+      }
+    }
+  },
   resolve: {
     alias: {
       components: path.resolve(__dirname, "src/components"),

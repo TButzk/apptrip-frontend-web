@@ -44,7 +44,7 @@ export function RouteDetailPage() {
 
   return <section className="feed-shell">
     <article className="post-card route-detail-card route-detail-hero"><div className="post-avatar route-avatar">{route.name.charAt(0).toUpperCase()}</div><div className="post-body"><div className="post-meta"><strong>Rota publicada</strong><span>{ordered.length} pontos</span></div><h1>{route.name}</h1><p>Deslize pelo mapa e visite cada ponto para comentar, avaliar e publicar mídias.</p></div></article>
-    <article className="card"><h2>Mapa da rota</h2><RouteMap points={ordered} /></article>
+    <article className="card route-detail-map-card"><h2>Mapa da rota</h2><div className="route-map-frame"><RouteMap points={ordered} /></div></article>
     <section className="summary-metrics route-detail-metrics">
       <article className="card"><h2>Distância</h2><p>{distanceKm} km</p></article>
       <article className="card"><h2>Duração</h2><p>{Math.max(25, ordered.length * 18)} min</p></article>

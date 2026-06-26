@@ -17,6 +17,7 @@
   --on-primary-container: #6e3900;
   --secondary: #4a6546;
   --secondary-container: #c9e8c0;
+  --topbar-height: 3.75rem;
 
   font-family: "Be Vietnam Pro", "Segoe UI", Tahoma, sans-serif;
   color: var(--text);
@@ -25,6 +26,20 @@
 
 * {
   box-sizing: border-box;
+}
+
+html,
+body {
+  overflow-x: hidden;
+  max-width: 100%;
+  height: 100%;
+  min-height: 100%;
+}
+
+#root {
+  width: 100%;
+  min-height: 100dvh;
+  height: 100%;
 }
 
 body {
@@ -42,11 +57,15 @@ a {
 }
 
 .app-shell {
+  width: 100%;
   min-height: 100vh;
+  overflow-x: hidden;
+  max-width: 100%;
 }
 
 .app-shell--with-bottom-nav {
   --bottom-nav-offset: calc(4.5rem + env(safe-area-inset-bottom, 0px));
+  --capture-viewport-height: calc(100dvh - var(--topbar-height) - var(--bottom-nav-offset));
 }
 
 .app-shell--with-bottom-nav .content {
@@ -55,18 +74,22 @@ a {
 
 .app-shell--with-bottom-nav .content:has(.capture-live-shell) {
   display: flex;
-  flex: 1;
+  flex: 1 1 auto;
   flex-direction: column;
+  width: 100%;
   max-width: none;
   margin: 0;
   padding: 0 0 var(--bottom-nav-offset);
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
+  align-self: stretch;
 }
 
 .app-shell--with-bottom-nav:has(.capture-live-shell) {
   display: flex;
   flex-direction: column;
+  width: 100%;
   height: 100dvh;
   min-height: 100dvh;
   overflow: hidden;
@@ -230,6 +253,7 @@ a {
   max-width: 720px;
   margin: 0 auto;
   padding: 1rem;
+  overflow-x: clip;
 }
 
 .content--immersive {
@@ -243,6 +267,15 @@ a {
 .stack {
   display: grid;
   gap: 0.85rem;
+}
+
+.feed-shell {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.feed-shell > * {
+  min-width: 0;
 }
 
 .feed-hero {
@@ -357,6 +390,29 @@ a {
 .route-detail-hero {
   border-radius: 20px;
   overflow: hidden;
+}
+
+.route-detail-map-card,
+.summary-map-card {
+  overflow: hidden;
+  min-width: 0;
+}
+
+.route-detail-map-card .map-container,
+.summary-map-card .map-container {
+  width: 100%;
+  max-width: 100%;
+}
+
+.route-map-frame {
+  width: 100%;
+  height: 380px;
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.route-map-frame .map-container {
+  height: 100%;
 }
 
 .point-rich-list li {
@@ -518,36 +574,59 @@ a {
 
 .capture-live-shell {
   display: flex;
-  flex: 1;
+  flex: none;
   flex-direction: column;
   gap: 0;
   width: 100%;
-  max-width: 430px;
-  margin: 0 auto;
-  min-height: 0;
+  min-width: 100%;
+  height: var(--capture-viewport-height);
+  min-height: var(--capture-viewport-height);
   overflow: hidden;
+  overscroll-behavior: contain;
+  touch-action: manipulation;
+}
+
+.app-shell--with-bottom-nav:has(.capture-live-shell) .capture-live-shell {
+  height: var(--capture-viewport-height);
+  min-height: var(--capture-viewport-height);
+  flex: none;
 }
 
 .capture-map-stage {
   position: relative;
+  display: flex;
+  flex-direction: column;
   flex: 1;
   width: 100%;
-  min-height: 0;
+  min-height: var(--capture-viewport-height);
+  height: 100%;
   border-radius: 0;
   overflow: hidden;
   border: 0;
   background: var(--surface-dim, #e1d8d2);
   box-shadow: none;
+  overscroll-behavior: contain;
 }
 
-.capture-map-stage .map-container {
+.capture-map-stage .map-container-host {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   min-height: 0;
-  border-radius: 0;
   z-index: 1;
+}
+
+.capture-map-stage .map-container,
+.capture-map-stage .leaflet-container {
+  width: 100%;
+  height: 100% !important;
+  min-height: 100%;
+  border-radius: 0;
+}
+
+.capture-route-map.leaflet-container {
+  min-height: var(--capture-viewport-height);
 }
 
 .capture-bottom-sheet {
@@ -559,13 +638,15 @@ a {
   z-index: 1200;
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
-  height: min(56dvh, 24rem);
+  height: auto;
+  max-height: calc(100% - 1rem);
   padding: 0 1rem 1rem;
   border-top-left-radius: 32px;
   border-top-right-radius: 32px;
   overflow: hidden;
+  overscroll-behavior: contain;
   scrollbar-width: none;
+  touch-action: manipulation;
   pointer-events: auto;
   transform: translateY(calc(100% - var(--capture-sheet-peek)));
   transition: transform 0.24s ease;
@@ -713,15 +794,27 @@ a {
 .capture-sheet-toggle {
   display: block;
   min-height: 0;
+  flex: 0 0 auto;
   padding: 0;
   border: 0;
   cursor: pointer;
   background: rgb(133 116 103 / 40%);
+  touch-action: manipulation;
 }
 
 .capture-sheet-toggle:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 4px;
+}
+
+.capture-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-height: 0;
+  padding-top: 0.85rem;
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 .capture-gps-status {
@@ -815,6 +908,14 @@ a {
 
 .capture-input-icon.send {
   background: var(--primary-container);
+}
+
+.capture-input-icon.recording {
+  background: var(--error-container, #ffdad6);
+  color: var(--error, #ba1a1a);
+  animation: capture-pulse 1.2s infinite;
+  touch-action: none;
+  user-select: none;
 }
 
 .capture-telemetry {
@@ -1027,6 +1128,7 @@ a {
   height: 16rem;
 }
 
+.explore-route-hero .map-container-host,
 .explore-route-hero .map-container {
   min-height: 16rem;
   height: 16rem;
@@ -1103,12 +1205,21 @@ a {
 }
 
 .explore-route-thumb {
+  display: grid;
+  place-items: center;
   width: 3.5rem;
   height: 3.5rem;
   flex-shrink: 0;
   border-radius: 12px;
   overflow: hidden;
   border: 1px solid var(--outline-variant);
+  background: linear-gradient(145deg, #285c43, #7fa57d 48%, #d7aa70);
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / 8%);
+}
+
+.explore-route-thumb-icon {
+  color: var(--primary);
+  opacity: 0.85;
 }
 
 .explore-route-divider {
@@ -1390,6 +1501,39 @@ h2 {
 .form-grid {
   display: grid;
   gap: 0.8rem;
+}
+
+.social-composer {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.field-group {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.social-composer-url {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.social-composer-url summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  list-style: none;
+}
+
+.social-composer-url summary::-webkit-details-marker {
+  display: none;
+}
+
+.social-composer-url[open] summary {
+  margin-bottom: 0.15rem;
 }
 
 .point-form {
@@ -1699,11 +1843,37 @@ button:disabled {
   padding-left: 1.25rem;
 }
 
-.map-container {
+.map-container,
+.leaflet-container {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.map-container {
   height: 380px;
   border-radius: 16px;
   overflow: hidden;
+}
+
+.map-container-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.map-tile-error {
+  position: absolute;
+  inset: 0;
+  z-index: 500;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.95rem;
+  color: var(--text-muted);
+  background: rgb(225 216 210 / 88%);
+  pointer-events: none;
 }
 
 .splash-screen {
@@ -1997,6 +2167,16 @@ button:disabled {
 
   .content {
     padding: 0.75rem;
+  }
+
+  .app-shell--with-bottom-nav .content:has(.capture-live-shell) {
+    padding: 0 0 var(--bottom-nav-offset);
+  }
+
+  .route-map-frame,
+  .route-detail-map-card .map-container,
+  .summary-map-card .map-container {
+    height: min(52vw, 260px);
   }
 
   .post-card {

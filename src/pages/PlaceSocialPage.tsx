@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent } from "react";
 import { Link, useParams } from "react-router-dom";
+import { CaptureInputBar } from "components/CaptureInputBar";
 import { useAuth } from "hooks/useAuth";
 import {
   createComment, createMedia, createPost, deleteComment, deleteMedia, deletePost,
@@ -21,12 +22,23 @@ export function PlaceSocialPage() {
   const [linkedRouteId, setLinkedRouteId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recordingAudio, setRecordingAudio] = useState(false);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioStopRequestedRef = useRef(false);
+
+  const noteReady = Boolean(
+    postTitle.trim() || postText.trim() || file || mediaUrl.trim()
+  );
 
   useEffect(() => {
     if (!placeId) return;
     void refresh();
     if (isAuthenticated) listMyRoutes().then(setRoutes).catch(() => setRoutes([]));
   }, [placeId, isAuthenticated]);
+
+  useEffect(() => () => discardAudioRecording(), []);
 
   const mediaByPost = useMemo(() => {
     const map = new Map<string, MediaDto[]>();
@@ -41,8 +53,8 @@ export function PlaceSocialPage() {
     try { setSocial(await getPlaceSocial(placeId)); } catch (err) { setError(messageOf(err)); }
   }
 
-  async function submitPost(event: FormEvent) {
-    event.preventDefault();
+  async function submitPost(event?: FormEvent) {
+    event?.preventDefault();
     if (!placeId) return;
     await action(async () => {
       let upload = null;
@@ -65,9 +77,93 @@ export function PlaceSocialPage() {
           sizeBytes: upload?.sizeBytes
         });
       }
-      setPostText(""); setPostTitle(""); setFile(null); setMediaUrl("");
+      setPostText("");
+      setPostTitle("");
+      setFile(null);
+      setMediaUrl("");
       await refresh();
     });
+  }
+
+  function handleFilePick(selected: File) {
+    setFile(selected);
+    setMediaType(inferMediaType(selected));
+  }
+
+  async function startAudioRecording(event: PointerEvent<HTMLButtonElement>) {
+    if (busy || noteReady || recordingAudio) return;
+    event.preventDefault();
+    if (event.currentTarget.setPointerCapture) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setError("Este navegador não oferece gravação de áudio.");
+      return;
+    }
+    try {
+      setError(null);
+      audioStopRequestedRef.current = false;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      audioStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (recorderEvent) => {
+        if (recorderEvent.data.size > 0) audioChunksRef.current.push(recorderEvent.data);
+      };
+      recorder.onstop = () => {
+        const chunks = audioChunksRef.current;
+        const mimeType = chunks[0]?.type || recorder.mimeType || "audio/webm";
+        audioChunksRef.current = [];
+        audioStopRequestedRef.current = false;
+        mediaRecorderRef.current = null;
+        cleanupAudioStream();
+        setRecordingAudio(false);
+        if (!chunks.length) return;
+        const recorded = new File(chunks, `apptrip-audio-${Date.now()}.webm`, { type: mimeType });
+        handleFilePick(recorded);
+      };
+      recorder.start();
+      setRecordingAudio(true);
+      if (audioStopRequestedRef.current) stopAudioRecording();
+    } catch (err) {
+      discardAudioRecording();
+      setError(messageOf(err) || "Permissão de microfone negada.");
+    }
+  }
+
+  function stopAudioRecording(event?: PointerEvent<HTMLButtonElement>) {
+    if (event) event.preventDefault();
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) {
+      audioStopRequestedRef.current = true;
+      return;
+    }
+    audioStopRequestedRef.current = true;
+    if (recorder.state !== "inactive") {
+      recorder.stop();
+      return;
+    }
+    discardAudioRecording();
+  }
+
+  function cleanupAudioStream() {
+    audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    audioStreamRef.current = null;
+  }
+
+  function discardAudioRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.ondataavailable = null;
+      recorder.onstop = null;
+      recorder.stop();
+    }
+    mediaRecorderRef.current = null;
+    audioChunksRef.current = [];
+    audioStopRequestedRef.current = false;
+    cleanupAudioStream();
+    setRecordingAudio(false);
   }
 
   async function comment(postId: string) {
@@ -114,15 +210,68 @@ export function PlaceSocialPage() {
 
       {isAuthenticated ? <article className="card">
         <h2>Adicionar ao ponto</h2>
-        <form onSubmit={submitPost} className="form-grid">
-          <label>Título<input value={postTitle} onChange={(e) => setPostTitle(e.target.value)} maxLength={180} /></label>
-          <label>Publicação<textarea value={postText} onChange={(e) => setPostText(e.target.value)} maxLength={5000} /></label>
-          <label>Foto, vídeo, áudio ou GIF<input type="file" accept="image/*,video/*,audio/*" capture="environment" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label>
-          <label>Ou URL<input type="url" value={mediaUrl} onChange={(e) => setMediaUrl(e.target.value)} /></label>
-          <label>Tipo da URL<select value={mediaType} onChange={(e) => setMediaType(e.target.value as MediaType)}><option value="Photo">Foto</option><option value="Video">Vídeo</option><option value="Audio">Áudio</option><option value="Gif">GIF</option></select></label>
-          <button disabled={busy}>Publicar</button>
+        <form onSubmit={(event) => void submitPost(event)} className="social-composer">
+          <div className="field-group">
+            <label htmlFor="composer-title">Título</label>
+            <input
+              id="composer-title"
+              value={postTitle}
+              onChange={(e) => setPostTitle(e.target.value)}
+              maxLength={180}
+              placeholder="Ex.: Vista do pôr do sol"
+              disabled={busy}
+            />
+          </div>
+          <CaptureInputBar
+            value={postText}
+            onChange={setPostText}
+            disabled={busy}
+            noteReady={noteReady}
+            recordingAudio={recordingAudio}
+            onAddClick={() => void submitPost()}
+            onMicClick={() => {
+              if (noteReady) void submitPost();
+            }}
+            onMicPointerDown={(event) => void startAudioRecording(event)}
+            onMicPointerUp={stopAudioRecording}
+            onCameraClick={() => undefined}
+            onEnterSubmit={() => {
+              if (noteReady) void submitPost();
+            }}
+            onAttachmentPick={handleFilePick}
+            onPhotoPick={handleFilePick}
+          />
+          {file ? <p className="muted-message">Selecionado: {file.name}</p> : null}
+          <details className="social-composer-url">
+            <summary>Adicionar por URL</summary>
+            <div className="field-group">
+              <label htmlFor="composer-media-url">URL de mídia</label>
+              <input
+                id="composer-media-url"
+                type="url"
+                value={mediaUrl}
+                onChange={(e) => setMediaUrl(e.target.value)}
+                placeholder="https://cdn.exemplo/foto.jpg"
+                disabled={busy}
+              />
+            </div>
+            <div className="field-group">
+              <label htmlFor="composer-media-type">Tipo da URL</label>
+              <select
+                id="composer-media-type"
+                value={mediaType}
+                onChange={(e) => setMediaType(e.target.value as MediaType)}
+                disabled={busy}
+              >
+                <option value="Photo">Foto</option>
+                <option value="Video">Vídeo</option>
+                <option value="Audio">Áudio</option>
+                <option value="Gif">GIF</option>
+              </select>
+            </div>
+          </details>
+          {error ? <p className="error">{error}</p> : null}
         </form>
-        {error ? <p className="error">{error}</p> : null}
       </article> : null}
 
       <article className="card"><h2>Publicações</h2>
@@ -162,4 +311,10 @@ function MediaView({ media }: { media: MediaDto }) {
   return <img loading="lazy" src={media.url} alt={media.name} />;
 }
 function LoginPrompt() { return <p className="muted-message"><Link to="/login">Entre</Link> para avaliar e participar.</p>; }
+function inferMediaType(file: File): MediaType {
+  if (file.type.startsWith("video/")) return "Video";
+  if (file.type.startsWith("audio/")) return "Audio";
+  if (file.type === "image/gif") return "Gif";
+  return "Photo";
+}
 const messageOf = (error: unknown) => error instanceof Error ? error.message : "Não foi possível concluir a operação.";

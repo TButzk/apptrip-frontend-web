@@ -1,14 +1,24 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type PointerEvent } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { RouteMap } from "components/RouteMap";
 import { MaterialIcon } from "components/MaterialIcon";
 import { useAuth } from "hooks/useAuth";
-import { useGeolocation, type GeoPosition } from "hooks/useGeolocation";
+import type { GeoPosition } from "hooks/useGeolocation";
 import {
   createMedia, createPlace, createPost, createRoute, finalizeRoute, getRoutePlaces,
   listMyRoutes, uploadMedia
 } from "services/routesService";
 import type { CreatePlaceDto, MediaType, PlaceDto, RouteDto } from "types/domain";
+import {
+  detectCaptureGeolocationProfile,
+  getGeolocationErrorMessage,
+  getRecoverableGeolocationStatus,
+  isPermissionDeniedGeolocationError,
+  isRecoverableGeolocationError,
+  seedCapturePosition,
+  startCaptureWatch,
+  type CaptureGeolocationProfile
+} from "utils/geolocationCapture";
 import { getMinimumDistanceMeters } from "utils/settingsPreferences";
 import {
   distanceMeters,
@@ -18,11 +28,22 @@ import {
   orderPlaces
 } from "utils/routeMetrics";
 
+const ACTIVE_CAPTURE_KEY = "apptrip_web_active_capture";
 const ACTIVE_ROUTE_KEY = "apptrip_web_active_route";
 const POINT_QUEUE_KEY = "apptrip_web_point_queue";
 
+type ActiveCaptureSession = {
+  routeId: string;
+  startedAt: string;
+  recordingIntent: boolean;
+  captureStarted: boolean;
+  minimumDistanceMeters: number;
+  lastSequence?: number;
+};
+
 export function CaptureRoutePage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { isAuthenticated } = useAuth();
   const [route, setRoute] = useState<RouteDto | null>(null);
   const [places, setPlaces] = useState<PlaceDto[]>([]);
@@ -38,20 +59,27 @@ export function CaptureRoutePage() {
   const [routesOpen, setRoutesOpen] = useState(false);
   const [recenterToken, setRecenterToken] = useState(0);
   const [livePosition, setLivePosition] = useState<GeoPosition | null>(null);
+  const [locationProblem, setLocationProblem] = useState(false);
   const [sheetExpanded, setSheetExpanded] = useState(false);
+  const [recordingAudio, setRecordingAudio] = useState(false);
+  const [captureStarted, setCaptureStarted] = useState(false);
 
   const watchRef = useRef<number | null>(null);
+  const geoProfileRef = useRef<CaptureGeolocationProfile>(detectCaptureGeolocationProfile());
   const routeRef = useRef<RouteDto | null>(null);
   const placesRef = useRef<PlaceDto[]>([]);
   const savingRef = useRef(false);
   const livePositionRef = useRef<GeoPosition | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
-  const audioInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const audioStopRequestedRef = useRef(false);
 
-  const geo = useGeolocation({ enabled: isAuthenticated && !recording });
   const orderedPlaces = useMemo(() => orderPlaces(places), [places]);
-  const userPosition = recording ? livePosition : geo.position;
+  const requestedRouteId = useMemo(() => new URLSearchParams(location.search).get("routeId"), [location.search]);
+  const userPosition = livePosition;
 
   useEffect(() => { routeRef.current = route; }, [route]);
   useEffect(() => { placesRef.current = places; }, [places]);
@@ -62,19 +90,16 @@ export function CaptureRoutePage() {
     const online = () => void syncQueue();
     window.addEventListener("online", online);
     return () => {
-      stopWatch();
+      stopWatch({ persistPaused: false });
+      discardAudioRecording();
       window.removeEventListener("online", online);
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, requestedRouteId]);
   useEffect(() => {
     if (!recording) return;
     const timer = window.setInterval(() => setClockTick((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
   }, [recording]);
-  useEffect(() => {
-    if (recording) setSheetExpanded(true);
-  }, [recording]);
-
   const totalDistanceKm = useMemo(() => {
     if (orderedPlaces.length < 2) return 0;
     let meters = 0;
@@ -112,22 +137,42 @@ export function CaptureRoutePage() {
     try {
       const routes = await listMyRoutes();
       setMyRoutes(routes);
-      const activeId = localStorage.getItem(ACTIVE_ROUTE_KEY);
-      const active = routes.find((item) => item.id === activeId && item.status === "DRAFT");
-      if (active) await selectRoute(active);
+      const session = readActiveCapture();
+      const activeId = requestedRouteId ?? session?.routeId;
+      const active = activeId
+        ? routes.find((item) => item.id === activeId && item.status === "DRAFT")
+        : singleDraft(routes);
+      if (active) {
+        const shouldResume = session?.routeId === active.id && session.recordingIntent;
+        await selectRoute(active, {
+          autoStart: shouldResume,
+          recordingIntent: shouldResume,
+          captureStarted: session?.routeId === active.id ? session.captureStarted : false
+        });
+      } else if (session?.routeId) {
+        clearActiveCapture();
+        setCaptureStartedState(false);
+      }
     } catch (err) {
       setError(messageOf(err));
     }
   }
 
-  async function selectRoute(selected: RouteDto) {
-    stopWatch();
-    const points = await getRoutePlaces(selected.id);
+  async function selectRoute(selected: RouteDto, options: { autoStart?: boolean; recordingIntent?: boolean; captureStarted?: boolean } = {}) {
+    stopWatch({ persistPaused: false });
+    const points = orderPlaces(await getRoutePlaces(selected.id));
+    const selectedCaptureStarted = Boolean(options.captureStarted || points.length > 0);
     setRoute(selected);
-    setPlaces(orderPlaces(points));
-    localStorage.setItem(ACTIVE_ROUTE_KEY, selected.id);
+    setPlaces(points);
+    setCaptureStartedState(selectedCaptureStarted);
+    routeRef.current = selected;
+    placesRef.current = points;
+    if (selected.status === "DRAFT") {
+      writeActiveCapture(selected, options.recordingIntent ?? false, points.length, selectedCaptureStarted);
+    }
     setRoutesOpen(false);
-    setStatus(`Rota "${selected.name}" carregada.`);
+    setStatus(options.autoStart ? `Rota "${selected.name}" recuperada. Retomando GPS...` : `Rota "${selected.name}" carregada.`);
+    if (options.autoStart) startWatch(selected);
   }
 
   async function ensureDraftRoute() {
@@ -138,15 +183,17 @@ export function CaptureRoutePage() {
     });
     setRoute(created);
     setPlaces([]);
-    localStorage.setItem(ACTIVE_ROUTE_KEY, created.id);
+    setCaptureStartedState(false);
+    writeActiveCapture(created, false, 0, false);
     setMyRoutes((current) => [created, ...current]);
     routeRef.current = created;
+    placesRef.current = [];
     return created;
   }
 
   async function toggleRecording() {
     if (recording) {
-      stopWatch();
+      stopWatch({ persistPaused: true });
       setStatus("Gravação pausada.");
       return;
     }
@@ -156,6 +203,51 @@ export function CaptureRoutePage() {
     });
   }
 
+  function clearGeoWatch() {
+    if (watchRef.current !== null) {
+      navigator.geolocation?.clearWatch(watchRef.current);
+      watchRef.current = null;
+    }
+  }
+
+  function beginGeoWatch(profile: CaptureGeolocationProfile) {
+    if (!navigator.geolocation) return;
+    geoProfileRef.current = profile;
+    clearGeoWatch();
+    watchRef.current = startCaptureWatch(
+      navigator.geolocation,
+      profile,
+      (position) => void receivePosition(position),
+      handleGeoWatchError
+    );
+  }
+
+  function handleGeoWatchError(geoError: GeolocationPositionError) {
+    if (isPermissionDeniedGeolocationError(geoError.code)) {
+      stopWatch({ persistPaused: true });
+      setLocationProblem(true);
+      setError(getGeolocationErrorMessage(geoError.code, geoProfileRef.current));
+      return;
+    }
+    if (isRecoverableGeolocationError(geoError.code)) {
+      setLocationProblem(true);
+      const fallbackProfile: CaptureGeolocationProfile = "desktop";
+      if (geoProfileRef.current !== fallbackProfile) {
+        setError(null);
+        setStatus(getRecoverableGeolocationStatus(fallbackProfile));
+        beginGeoWatch(fallbackProfile);
+        return;
+      }
+      setStatus(getRecoverableGeolocationStatus(fallbackProfile));
+      setError(getGeolocationErrorMessage(geoError.code, fallbackProfile));
+      beginGeoWatch(fallbackProfile);
+      return;
+    }
+    stopWatch({ persistPaused: true });
+    setLocationProblem(true);
+    setError(getGeolocationErrorMessage(geoError.code, geoProfileRef.current));
+  }
+
   function startWatch(target = routeRef.current) {
     if (!target || target.status !== "DRAFT") {
       setError("Selecione uma rota em gravação.");
@@ -163,21 +255,23 @@ export function CaptureRoutePage() {
     }
     if (!navigator.geolocation) {
       setError("Este navegador não oferece geolocalização.");
+      setLocationProblem(true);
       return;
     }
-    stopWatch();
+    stopWatch({ persistPaused: false });
+    setCaptureStartedState(true);
+    writeActiveCapture(target, true, placesRef.current.length, true);
     setRecording(true);
+    setLocationProblem(false);
+    setError(null);
+    geoProfileRef.current = detectCaptureGeolocationProfile();
     setStatus("Aguardando sinal GPS...");
-    watchRef.current = navigator.geolocation.watchPosition(
-      (position) => void receivePosition(position),
-      (geoError) => {
-        stopWatch();
-        setError(geoError.code === 1
-          ? "Permita o acesso à localização para gravar a rota."
-          : "Não foi possível receber a localização.");
-      },
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
+    seedCapturePosition(
+      navigator.geolocation,
+      geoProfileRef.current,
+      (position) => void receivePosition(position)
     );
+    beginGeoWatch(geoProfileRef.current);
   }
 
   async function receivePosition(position: GeolocationPosition) {
@@ -188,6 +282,8 @@ export function CaptureRoutePage() {
       altitude: position.coords.altitude,
       speed: position.coords.speed
     });
+    setLocationProblem(false);
+    setError(null);
 
     const active = routeRef.current;
     if (!active || savingRef.current) return;
@@ -214,12 +310,14 @@ export function CaptureRoutePage() {
     try {
       const saved = await createPlace(payload);
       addPlace(saved);
+      writeActiveCapture(active, true, payload.sequence);
       setStatus(`${saved.name} salvo automaticamente.`);
     } catch (err) {
       if (messageOf(err).startsWith("Ponto ignorado")) {
         setStatus(messageOf(err));
       } else {
         enqueue(payload);
+        writeActiveCapture(active, true, payload.sequence);
         setPendingCount(readQueue().length);
         setStatus("Sem conexão. Ponto guardado para sincronização.");
       }
@@ -247,14 +345,14 @@ export function CaptureRoutePage() {
 
   async function finish() {
     if (!route) return;
-    stopWatch();
+    stopWatch({ persistPaused: false });
     await action(async () => {
       await syncQueue();
       if (readQueue().some((point) => point.routeId === route.id)) {
         throw new Error("Ainda há pontos aguardando conexão. A rota não pode ser finalizada.");
       }
       const updated = await finalizeRoute(route.id);
-      localStorage.removeItem(ACTIVE_ROUTE_KEY);
+      clearActiveCapture();
       replaceRoute(updated);
       navigate(`/routes/${updated.id}/summary`, { replace: true });
     });
@@ -270,7 +368,7 @@ export function CaptureRoutePage() {
       throw new Error("Inicie a gravação para adicionar conteúdo.");
     }
 
-    const position = livePositionRef.current ?? geo.position;
+    const position = livePositionRef.current;
     if (!position) {
       throw new Error("Aguarde o sinal GPS para registrar neste ponto.");
     }
@@ -335,14 +433,103 @@ export function CaptureRoutePage() {
     void publishMedia(file, fallbackType ?? inferMediaType(file));
   }
 
-  function stopWatch() {
-    if (watchRef.current !== null) navigator.geolocation?.clearWatch(watchRef.current);
-    watchRef.current = null;
+  async function startAudioRecording(event: PointerEvent<HTMLButtonElement>) {
+    if (!canInteract || noteReady || recordingAudio) return;
+    event.preventDefault();
+    if (event.currentTarget.setPointerCapture) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setError("Este navegador não oferece gravação de áudio.");
+      return;
+    }
+    try {
+      setError(null);
+      setMessage(null);
+      audioStopRequestedRef.current = false;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      audioStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (recorderEvent) => {
+        if (recorderEvent.data.size > 0) audioChunksRef.current.push(recorderEvent.data);
+      };
+      recorder.onstop = () => {
+        const chunks = audioChunksRef.current;
+        const mimeType = chunks[0]?.type || recorder.mimeType || "audio/webm";
+        audioChunksRef.current = [];
+        audioStopRequestedRef.current = false;
+        mediaRecorderRef.current = null;
+        cleanupAudioStream();
+        setRecordingAudio(false);
+        if (!chunks.length) return;
+        const file = new File(chunks, `apptrip-audio-${Date.now()}.webm`, { type: mimeType });
+        void publishMedia(file, "Audio");
+      };
+      recorder.start();
+      setRecordingAudio(true);
+      setStatus("Gravando áudio...");
+      if (audioStopRequestedRef.current) stopAudioRecording();
+    } catch (err) {
+      discardAudioRecording();
+      setError(messageOf(err) || "Permissão de microfone negada.");
+    }
+  }
+
+  function stopAudioRecording(event?: PointerEvent<HTMLButtonElement>) {
+    if (event) event.preventDefault();
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) {
+      audioStopRequestedRef.current = true;
+      return;
+    }
+    audioStopRequestedRef.current = true;
+    if (recorder.state !== "inactive") {
+      recorder.stop();
+      return;
+    }
+    discardAudioRecording();
+  }
+
+  function cleanupAudioStream() {
+    audioStreamRef.current?.getTracks().forEach((track) => track.stop());
+    audioStreamRef.current = null;
+  }
+
+  function discardAudioRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.ondataavailable = null;
+      recorder.onstop = null;
+      recorder.stop();
+    }
+    mediaRecorderRef.current = null;
+    audioChunksRef.current = [];
+    audioStopRequestedRef.current = false;
+    cleanupAudioStream();
+  }
+
+  function stopWatch(options: { persistPaused?: boolean } = {}) {
+    stopAudioRecording();
+    clearGeoWatch();
     setRecording(false);
+    if (options.persistPaused) {
+      const active = routeRef.current;
+      if (active?.status === "DRAFT") writeActiveCapture(active, false, placesRef.current.length);
+    }
+  }
+
+  function setCaptureStartedState(value: boolean) {
+    setCaptureStarted(value);
   }
 
   function addPlace(place: PlaceDto) {
-    setPlaces((current) => current.some((item) => item.id === place.id) ? current : [...current, place]);
+    setPlaces((current) => {
+      const next = current.some((item) => item.id === place.id) ? current : [...current, place];
+      placesRef.current = next;
+      return next;
+    });
   }
 
   function replaceRoute(updated: RouteDto) {
@@ -362,11 +549,12 @@ export function CaptureRoutePage() {
     }
   }
 
-  const gpsLabel = pendingCount ? "GPS COM FILA" : geo.error || geo.permissionDenied ? "GPS INDISPONÍVEL" : "GPS EXCELENTE";
-  const gpsState = pendingCount ? "is-queue" : geo.error || geo.permissionDenied ? "is-error" : "";
+  const gpsLabel = pendingCount ? "GPS COM FILA" : locationProblem ? "GPS INDISPONÍVEL" : recording ? "GPS ATIVO" : "GPS PRONTO";
+  const gpsState = pendingCount ? "is-queue" : locationProblem ? "is-error" : "";
   const hasDraft = route?.status === "DRAFT";
-  const canInteract = Boolean(hasDraft && !busy);
+  const canInteract = Boolean(recording && !busy);
   const showDualControls = hasDraft && (recording || orderedPlaces.length > 0);
+  const startCtaLabel = captureStarted ? "Continuar gravação" : "Iniciar gravação";
   const noteReady = noteDraft.trim().length > 0;
   const sheetState = sheetExpanded ? "expanded" : "collapsed";
 
@@ -374,6 +562,7 @@ export function CaptureRoutePage() {
     <section className="capture-live-shell">
       <div className="capture-map-stage">
         <RouteMap
+          className="capture-route-map"
           points={orderedPlaces}
           userPosition={userPosition}
           followUser={recording}
@@ -430,10 +619,6 @@ export function CaptureRoutePage() {
         <article
           className={`capture-bottom-sheet ${sheetState} glass-panel warm-shadow`}
           aria-expanded={sheetExpanded}
-          onFocusCapture={(event) => {
-            if (event.target instanceof HTMLElement && event.target.closest(".capture-sheet-toggle")) return;
-            setSheetExpanded(true);
-          }}
         >
           <button
             type="button"
@@ -442,150 +627,146 @@ export function CaptureRoutePage() {
             aria-expanded={sheetExpanded}
             onClick={() => setSheetExpanded((value) => !value)}
           />
-          <p className={`capture-gps-status${gpsState ? ` ${gpsState}` : ""}`}>
-            <MaterialIcon name="signal_cellular_alt" size={20} />
-            {gpsLabel}
-          </p>
-          {(error || message || (pendingCount > 0 && status)) ? (
-            <p className={`capture-status-line${error ? " error" : ""}`}>
-              {error ?? message ?? status}
-              {pendingCount > 0 && !error && !message ? ` · ${pendingCount} ponto(s) na fila` : ""}
+          {sheetExpanded ? (
+            <div className="capture-sheet-body">
+              <p className={`capture-gps-status${gpsState ? ` ${gpsState}` : ""}`}>
+                <MaterialIcon name="signal_cellular_alt" size={20} />
+                {gpsLabel}
             </p>
+              {(error || message || recordingAudio || (pendingCount > 0 && status)) ? (
+                <p className={`capture-status-line${error ? " error" : ""}`}>
+                  {error ?? message ?? (recordingAudio ? "Gravando áudio..." : status)}
+                  {pendingCount > 0 && !error && !message && !recordingAudio ? ` · ${pendingCount} ponto(s) na fila` : ""}
+                </p>
+              ) : null}
+
+              {recording ? (
+                <div className={`capture-input-bar${canInteract ? "" : " disabled"}`}>
+                  <button
+                    type="button"
+                    className="capture-input-add"
+                    aria-label={noteReady ? "Publicar nota" : "Anexar mídia"}
+                    disabled={!canInteract}
+                    onClick={() => {
+                      if (noteReady) {
+                        void publishNote();
+                        return;
+                      }
+                      attachmentInputRef.current?.click();
+                    }}
+                  >
+                    <MaterialIcon name="add" size={22} />
+                  </button>
+                  <input
+                    type="text"
+                    value={noteDraft}
+                    placeholder="Algo incrível aconteceu aqui?"
+                    disabled={!canInteract}
+                    onChange={(event) => setNoteDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void publishNote();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className={`capture-input-icon${noteReady ? " send" : ""}${recordingAudio ? " recording" : ""}`}
+                    aria-label={noteReady ? "Enviar nota" : "Gravar áudio"}
+                    aria-pressed={recordingAudio}
+                    disabled={!canInteract}
+                    onPointerDown={(event) => void startAudioRecording(event)}
+                    onPointerUp={stopAudioRecording}
+                    onPointerLeave={stopAudioRecording}
+                    onPointerCancel={stopAudioRecording}
+                    onClick={() => {
+                      if (noteReady) void publishNote();
+                    }}
+                  >
+                    <MaterialIcon name={noteReady ? "send" : "mic"} size={20} />
+                  </button>
+                  <button
+                    type="button"
+                    className="capture-input-icon"
+                    aria-label="Tirar foto"
+                    disabled={!canInteract}
+                    onClick={() => {
+                      photoInputRef.current?.click();
+                    }}
+                  >
+                    <MaterialIcon name="photo_camera" size={20} />
+                  </button>
+                  <input
+                    ref={attachmentInputRef}
+                    type="file"
+                    accept="image/*,video/*,audio/*"
+                    hidden
+                    onChange={(event) => handleMediaPick(event)}
+                  />
+                  <input
+                    ref={photoInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    hidden
+                    onChange={(event) => handleMediaPick(event, "Photo")}
+                  />
+                </div>
+              ) : null}
+
+              <div className="capture-telemetry">
+                <div className="capture-telemetry-item">
+                  <div className="capture-telemetry-icon">
+                    <MaterialIcon name="landscape" size={22} />
+                  </div>
+                  <div className="capture-telemetry-copy">
+                    <span>ALTITUDE</span>
+                    <strong>{formatAltitude(userPosition?.altitude)}</strong>
+                  </div>
+                </div>
+                <div className="capture-telemetry-item">
+                  <div className="capture-telemetry-icon">
+                    <MaterialIcon name="speed" size={22} />
+                  </div>
+                  <div className="capture-telemetry-copy">
+                    <span>VELOCIDADE</span>
+                    <strong>{formatSpeedKmh(userPosition?.speed)}</strong>
+                  </div>
+                </div>
+              </div>
+
+              {showDualControls ? (
+                <div className="capture-controls">
+                  <button
+                    type="button"
+                    className="capture-primary-control"
+                    onClick={() => void toggleRecording()}
+                    disabled={busy}
+                  >
+                    <MaterialIcon name={recording ? "pause" : "play_arrow"} filled size={22} />
+                    {recording ? "Pausar" : captureStarted ? "Continuar" : "Iniciar"}
+                  </button>
+                  <button
+                    type="button"
+                    className="capture-secondary-control"
+                    onClick={() => void finish()}
+                    disabled={busy || !route}
+                  >
+                    <MaterialIcon name="stop" filled size={22} />
+                    Finalizar
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="capture-start-cta"
+                  onClick={() => void toggleRecording()}
+                  disabled={busy}
+                >
+                  <MaterialIcon name="play_arrow" filled size={22} />
+                  {startCtaLabel}
+                </button>
+              )}
+            </div>
           ) : null}
-
-          <div className={`capture-input-bar${canInteract ? "" : " disabled"}`}>
-            <button
-              type="button"
-              className="capture-input-add"
-              aria-label={noteReady ? "Publicar nota" : "Anexar mídia"}
-              disabled={!canInteract}
-              onClick={() => {
-                setSheetExpanded(true);
-                if (noteReady) {
-                  void publishNote();
-                  return;
-                }
-                attachmentInputRef.current?.click();
-              }}
-            >
-              <MaterialIcon name="add" size={22} />
-            </button>
-            <input
-              type="text"
-              value={noteDraft}
-              placeholder="Algo incrível aconteceu aqui?"
-              disabled={!canInteract}
-              onChange={(event) => setNoteDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void publishNote();
-              }}
-            />
-            <button
-              type="button"
-              className={`capture-input-icon${noteReady ? " send" : ""}`}
-              aria-label={noteReady ? "Enviar nota" : "Gravar áudio"}
-              disabled={!canInteract}
-              onClick={() => {
-                setSheetExpanded(true);
-                if (noteReady) {
-                  void publishNote();
-                  return;
-                }
-                audioInputRef.current?.click();
-              }}
-            >
-              <MaterialIcon name={noteReady ? "send" : "mic"} size={20} />
-            </button>
-            <button
-              type="button"
-              className="capture-input-icon"
-              aria-label="Tirar foto"
-              disabled={!canInteract}
-              onClick={() => {
-                setSheetExpanded(true);
-                photoInputRef.current?.click();
-              }}
-            >
-              <MaterialIcon name="photo_camera" size={20} />
-            </button>
-            <input
-              ref={attachmentInputRef}
-              type="file"
-              accept="image/*,video/*,audio/*"
-              hidden
-              onChange={(event) => handleMediaPick(event)}
-            />
-            <input
-              ref={photoInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              hidden
-              onChange={(event) => handleMediaPick(event, "Photo")}
-            />
-            <input
-              ref={audioInputRef}
-              type="file"
-              accept="audio/*"
-              capture
-              hidden
-              onChange={(event) => handleMediaPick(event, "Audio")}
-            />
-          </div>
-
-          <div className="capture-telemetry">
-            <div className="capture-telemetry-item">
-              <div className="capture-telemetry-icon">
-                <MaterialIcon name="landscape" size={22} />
-              </div>
-              <div className="capture-telemetry-copy">
-                <span>ALTITUDE</span>
-                <strong>{formatAltitude(userPosition?.altitude)}</strong>
-              </div>
-            </div>
-            <div className="capture-telemetry-item">
-              <div className="capture-telemetry-icon">
-                <MaterialIcon name="speed" size={22} />
-              </div>
-              <div className="capture-telemetry-copy">
-                <span>VELOCIDADE</span>
-                <strong>{formatSpeedKmh(userPosition?.speed)}</strong>
-              </div>
-            </div>
-          </div>
-
-          {showDualControls ? (
-            <div className="capture-controls">
-              <button
-                type="button"
-                className="capture-primary-control"
-                onClick={() => void toggleRecording()}
-                disabled={busy}
-              >
-                <MaterialIcon name={recording ? "pause" : "play_arrow"} filled size={22} />
-                {recording ? "Pausar" : "Iniciar"}
-              </button>
-              <button
-                type="button"
-                className="capture-secondary-control"
-                onClick={() => void finish()}
-                disabled={busy || !route}
-              >
-                <MaterialIcon name="stop" filled size={22} />
-                Finalizar
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              className="capture-start-cta"
-              onClick={() => void toggleRecording()}
-              disabled={busy}
-            >
-              <MaterialIcon name="play_arrow" filled size={22} />
-              Iniciar gravação
-            </button>
-          )}
         </article>
       </div>
 
@@ -627,6 +808,63 @@ function inferMediaType(file: File): MediaType {
   if (file.type === "image/gif") return "Gif";
   return "Photo";
 }
+
+function readActiveCapture(): ActiveCaptureSession | null {
+  try {
+    const stored = localStorage.getItem(ACTIVE_CAPTURE_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored) as Partial<ActiveCaptureSession>;
+      if (parsed.routeId) {
+        return {
+          routeId: parsed.routeId,
+          startedAt: parsed.startedAt ?? new Date().toISOString(),
+          recordingIntent: Boolean(parsed.recordingIntent),
+          captureStarted: Boolean(parsed.captureStarted),
+          minimumDistanceMeters: Number(parsed.minimumDistanceMeters ?? getMinimumDistanceMeters()),
+          lastSequence: typeof parsed.lastSequence === "number" ? parsed.lastSequence : undefined
+        };
+      }
+    }
+  } catch {
+    localStorage.removeItem(ACTIVE_CAPTURE_KEY);
+  }
+
+  const legacyRouteId = localStorage.getItem(ACTIVE_ROUTE_KEY);
+  if (!legacyRouteId) return null;
+  return {
+    routeId: legacyRouteId,
+    startedAt: new Date().toISOString(),
+    recordingIntent: false,
+    captureStarted: false,
+    minimumDistanceMeters: getMinimumDistanceMeters()
+  };
+}
+
+function writeActiveCapture(route: RouteDto, recordingIntent: boolean, lastSequence?: number, captureStarted?: boolean) {
+  const previous = readActiveCapture();
+  const previousCaptureStarted = previous?.routeId === route.id ? previous.captureStarted : false;
+  const session: ActiveCaptureSession = {
+    routeId: route.id,
+    startedAt: previous?.routeId === route.id ? previous.startedAt : new Date().toISOString(),
+    recordingIntent,
+    captureStarted: captureStarted ?? (previousCaptureStarted || Boolean(lastSequence && lastSequence > 0)),
+    minimumDistanceMeters: route.minimumDistanceMeters,
+    lastSequence
+  };
+  localStorage.setItem(ACTIVE_CAPTURE_KEY, JSON.stringify(session));
+  localStorage.setItem(ACTIVE_ROUTE_KEY, route.id);
+}
+
+function clearActiveCapture() {
+  localStorage.removeItem(ACTIVE_CAPTURE_KEY);
+  localStorage.removeItem(ACTIVE_ROUTE_KEY);
+}
+
+function singleDraft(routes: RouteDto[]) {
+  const drafts = routes.filter((item) => item.status === "DRAFT");
+  return drafts.length === 1 ? drafts[0] : null;
+}
+
 function readQueue(): CreatePlaceDto[] {
   try { return JSON.parse(localStorage.getItem(POINT_QUEUE_KEY) ?? "[]") as CreatePlaceDto[]; } catch { return []; }
 }

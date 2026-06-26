@@ -88,7 +88,7 @@ export function MyRoutesPage() {
               <p>{helperText(route.status)}</p>
               <div className="post-actions">
                 <Link to={`/routes/${route.id}`}>Ver detalhes</Link>
-                {route.status === "DRAFT" ?<Link to="/routes/new">Retomar captura</Link> : null}
+                {route.status === "DRAFT" ?<Link to={captureDestination(route.id)}>Retomar captura</Link> : null}
                 {route.status === "FINISHED" ?<Link to={`/routes/${route.id}/summary`}>Revisar e publicar</Link> : null}
                 {route.status === "PUBLISHED" ?<Link to={`/routes/${route.id}/summary`}>Resumo</Link> : null}
               </div>
@@ -113,7 +113,11 @@ function helperText(status: RouteStatus) {
 }
 
 function routeDestination(route: RouteDto) {
-  if (route.status === "DRAFT") return "/routes/new";
+  if (route.status === "DRAFT") return captureDestination(route.id);
   if (route.status === "FINISHED") return `/routes/${route.id}/summary`;
   return `/routes/${route.id}`;
+}
+
+function captureDestination(routeId: string) {
+  return `/routes/new?routeId=${encodeURIComponent(routeId)}`;
 }

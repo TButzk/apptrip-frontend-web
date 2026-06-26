@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SplashScreen } from "components/SplashScreen";
 import { CaptureRoutePage } from "./CaptureRoutePage";
+import * as geolocationCapture from "utils/geolocationCapture";
 import { LoginPage } from "./LoginPage";
 import { MyRoutesPage } from "./MyRoutesPage";
 import { PlaceSocialPage } from "./PlaceSocialPage";
@@ -220,27 +221,50 @@ describe("Web views", () => {
     expect(screen.queryByRole("link", { name: draftRoute.name })).not.toBeInTheDocument();
   });
 
+  it("links draft routes to capture with the route id", async () => {
+    setAuthenticatedSession();
+    renderView(<MyRoutesPage />);
+    expect(await screen.findByRole("heading", { name: "Minhas rotas" })).toBeInTheDocument();
+
+    expect(screen.getByRole("link", { name: draftRoute.name })).toHaveAttribute(
+      "href",
+      "/routes/new?routeId=route-draft"
+    );
+    expect(screen.getByRole("link", { name: "Retomar captura" })).toHaveAttribute(
+      "href",
+      "/routes/new?routeId=route-draft"
+    );
+  });
+
+  it("shows continue label when resuming a draft route with existing points", async () => {
+    setAuthenticatedSession();
+    serviceMocks.listMyRoutes.mockResolvedValue([draftRoute, finishedRoute, publishedRoute]);
+    installGeolocationMock();
+
+    renderRoute("/routes/new", "/routes/new?routeId=route-draft", <CaptureRoutePage />);
+
+    expect(await screen.findByText("2 pontos no mapa")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Expandir painel de captura" }));
+    expect(screen.getByRole("button", { name: "Continuar" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Iniciar" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Finalizar" })).toBeInTheDocument();
+  });
+
+  it("does not request GPS when opening capture without an active session", async () => {
+    setAuthenticatedSession();
+    serviceMocks.listMyRoutes.mockResolvedValue([finishedRoute, publishedRoute]);
+    const { watchPosition } = installGeolocationMock();
+
+    renderRoute("/routes/new", "/routes/new", <CaptureRoutePage />);
+
+    await waitFor(() => expect(serviceMocks.listMyRoutes).toHaveBeenCalled());
+    expect(watchPosition).not.toHaveBeenCalled();
+  });
+
   it("starts a GPS capture and navigates to summary on finish", async () => {
     setAuthenticatedSession();
-    const watchPosition = vi.fn((_success: PositionCallback) => {
-      _success({
-        coords: {
-          latitude: -29.15,
-          longitude: -51.15,
-          accuracy: 8,
-          altitude: 150,
-          speed: 1.4,
-          altitudeAccuracy: null,
-          heading: null
-        },
-        timestamp: Date.now()
-      } as GeolocationPosition);
-      return 12;
-    });
-    Object.defineProperty(navigator, "geolocation", {
-      configurable: true,
-      value: { watchPosition, clearWatch: vi.fn() }
-    });
+    serviceMocks.listMyRoutes.mockResolvedValue([finishedRoute, publishedRoute]);
+    const { watchPosition } = installGeolocationMock();
 
     renderRoute("/routes/new", "/routes/new", <CaptureRoutePage />, [
       <Route key="summary" path="/routes/:routeId/summary" element={<RouteSummaryPage />} />
@@ -251,7 +275,10 @@ describe("Web views", () => {
       return publishedRoute;
     });
 
-    expect(screen.getByPlaceholderText("Algo incrível aconteceu aqui?")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Algo incrível aconteceu aqui?")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expandir painel de captura" }));
+
     expect(screen.getByText("ALTITUDE")).toBeInTheDocument();
     expect(screen.getByText("VELOCIDADE")).toBeInTheDocument();
 
@@ -262,37 +289,47 @@ describe("Web views", () => {
       minimumDistanceMeters: 25
     }));
     expect(watchPosition).toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem("apptrip_web_active_capture") ?? "{}")).toMatchObject({
+      routeId: "route-draft",
+      recordingIntent: true,
+      minimumDistanceMeters: 25
+    });
     expect(screen.getByRole("button", { name: "Finalizar" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Finalizar" }));
 
     await waitFor(() => expect(serviceMocks.finalizeRoute).toHaveBeenCalledWith("route-draft"));
+    expect(localStorage.getItem("apptrip_web_active_capture")).toBeNull();
+    expect(localStorage.getItem("apptrip_web_active_route")).toBeNull();
     expect(await screen.findByRole("heading", { name: `Rota salva: ${finishedRoute.name}` })).toBeInTheDocument();
+  });
+
+  it("restores an active capture session and resumes GPS after reload", async () => {
+    setAuthenticatedSession();
+    localStorage.setItem("apptrip_web_active_capture", JSON.stringify({
+      routeId: "route-draft",
+      startedAt: "2026-06-16T12:00:00.000Z",
+      recordingIntent: true,
+      minimumDistanceMeters: 25,
+      lastSequence: 2
+    }));
+    const { watchPosition } = installGeolocationMock(() => 12);
+
+    renderRoute("/routes/new", "/routes/new", <CaptureRoutePage />);
+
+    expect(await screen.findByText("2 pontos no mapa")).toBeInTheDocument();
+    await waitFor(() => expect(watchPosition).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("Gravando...")).toBeInTheDocument();
   });
 
   it("uploads photo media while recording", async () => {
     setAuthenticatedSession();
-    const watchPosition = vi.fn((_success: PositionCallback) => {
-      _success({
-        coords: {
-          latitude: -29.15,
-          longitude: -51.15,
-          accuracy: 8,
-          altitude: 150,
-          speed: 1.4,
-          altitudeAccuracy: null,
-          heading: null
-        },
-        timestamp: Date.now()
-      } as GeolocationPosition);
-      return 12;
-    });
-    Object.defineProperty(navigator, "geolocation", {
-      configurable: true,
-      value: { watchPosition, clearWatch: vi.fn() }
-    });
+    serviceMocks.listMyRoutes.mockResolvedValue([finishedRoute, publishedRoute]);
+    installGeolocationMock();
 
     renderRoute("/routes/new", "/routes/new", <CaptureRoutePage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Expandir painel de captura" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Iniciar gravação" }));
     await waitFor(() => expect(serviceMocks.createRoute).toHaveBeenCalled());
@@ -309,23 +346,26 @@ describe("Web views", () => {
     expect(await screen.findByText("Mídia adicionada ao ponto atual.")).toBeInTheDocument();
   });
 
-  it("expands the capture sheet and enables media controls after a draft route starts", async () => {
+  it("collapses the capture sheet and shows media controls only while recording", async () => {
     setAuthenticatedSession();
-    Object.defineProperty(navigator, "geolocation", {
-      configurable: true,
-      value: { watchPosition: vi.fn(() => 12), clearWatch: vi.fn() }
-    });
+    serviceMocks.listMyRoutes.mockResolvedValue([finishedRoute, publishedRoute]);
+    installGeolocationMock();
 
     renderRoute("/routes/new", "/routes/new", <CaptureRoutePage />);
 
     const sheet = document.querySelector(".capture-bottom-sheet");
     expect(sheet).toHaveClass("collapsed");
-    expect(screen.getByRole("button", { name: "Tirar foto" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Tirar foto" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expandir painel de captura" }));
+
+    expect(sheet).toHaveClass("expanded");
+    expect(screen.getByRole("button", { name: "Iniciar gravação" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Tirar foto" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Iniciar gravação" }));
 
     await waitFor(() => expect(serviceMocks.createRoute).toHaveBeenCalled());
-    await waitFor(() => expect(sheet).toHaveClass("expanded"));
     expect(screen.getByRole("button", { name: "Anexar mídia" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Gravar áudio" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Tirar foto" })).toBeEnabled();
@@ -334,6 +374,217 @@ describe("Web views", () => {
 
     expect(sheet).toHaveClass("collapsed");
     expect(sheet).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Tirar foto" })).not.toBeInTheDocument();
+  });
+
+  it("renames the start CTA to continue after pausing a capture without GPS points", async () => {
+    setAuthenticatedSession();
+    serviceMocks.listMyRoutes.mockResolvedValue([finishedRoute, publishedRoute]);
+    const watchPosition = vi.fn(() => 12);
+    const getCurrentPosition = vi.fn();
+    const clearWatch = vi.fn();
+    Object.defineProperty(navigator, "geolocation", {
+      configurable: true,
+      value: { watchPosition, getCurrentPosition, clearWatch }
+    });
+
+    renderRoute("/routes/new", "/routes/new", <CaptureRoutePage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Expandir painel de captura" }));
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar gravação" }));
+
+    await waitFor(() => expect(serviceMocks.createRoute).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Pausar" }));
+
+    expect(clearWatch).toHaveBeenCalledWith(12);
+    expect(await screen.findByRole("button", { name: "Continuar gravação" })).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("apptrip_web_active_capture") ?? "{}")).toMatchObject({
+      routeId: "route-draft",
+      recordingIntent: false,
+      captureStarted: true,
+      lastSequence: 0
+    });
+  });
+
+  it("records audio while holding the mic button", async () => {
+    setAuthenticatedSession();
+    serviceMocks.listMyRoutes.mockResolvedValue([finishedRoute, publishedRoute]);
+    installGeolocationMock();
+
+    const trackStop = vi.fn();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getTracks: () => [{ stop: trackStop }]
+        })
+      }
+    });
+    const audioBlob = new Blob(["audio"], { type: "audio/webm" });
+    class MockMediaRecorder {
+      state = "inactive";
+      mimeType = "audio/webm";
+      ondataavailable: ((event: BlobEvent) => void) | null = null;
+      onstop: (() => void) | null = null;
+
+      constructor(_stream: MediaStream) {}
+
+      start() {
+        this.state = "recording";
+      }
+
+      stop() {
+        this.state = "inactive";
+        this.ondataavailable?.({ data: audioBlob } as BlobEvent);
+        this.onstop?.();
+      }
+    }
+    vi.stubGlobal("MediaRecorder", MockMediaRecorder);
+
+    renderRoute("/routes/new", "/routes/new", <CaptureRoutePage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Expandir painel de captura" }));
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar gravação" }));
+    await waitFor(() => expect(serviceMocks.createRoute).toHaveBeenCalled());
+
+    const micButton = screen.getByRole("button", { name: "Gravar áudio" });
+    fireEvent.pointerDown(micButton, { pointerId: 1 });
+    await screen.findByText("Gravando áudio...");
+    fireEvent.pointerUp(micButton, { pointerId: 1 });
+
+    await waitFor(() => expect(serviceMocks.uploadMedia).toHaveBeenCalledWith(expect.any(File)));
+    const [file] = serviceMocks.uploadMedia.mock.calls[serviceMocks.uploadMedia.mock.calls.length - 1] ?? [];
+    expect(file).toMatchObject({ name: expect.stringMatching(/^apptrip-audio-/), type: "audio/webm" });
+    expect(trackStop).toHaveBeenCalled();
+  });
+
+  it("retries desktop geolocation after a mobile timeout without stopping capture", async () => {
+    setAuthenticatedSession();
+    serviceMocks.listMyRoutes.mockResolvedValue([finishedRoute, publishedRoute]);
+    vi.spyOn(geolocationCapture, "detectCaptureGeolocationProfile").mockReturnValue("mobile");
+
+    let watchCalls = 0;
+    const { watchPosition } = installGeolocationMock((success, error) => {
+      watchCalls += 1;
+      if (watchCalls === 1) {
+        error?.({
+          code: 3,
+          message: "timeout",
+          PERMISSION_DENIED: 1,
+          POSITION_UNAVAILABLE: 2,
+          TIMEOUT: 3
+        } as GeolocationPositionError);
+        return 1;
+      }
+      success(sampleGeolocationPosition());
+      return 12;
+    });
+
+    renderRoute("/routes/new", "/routes/new", <CaptureRoutePage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Expandir painel de captura" }));
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar gravação" }));
+
+    await waitFor(() => expect(watchPosition).toHaveBeenCalledTimes(2));
+    const retryOptions = (watchPosition.mock.calls[1] as unknown as [unknown, unknown, PositionOptions])[2];
+    expect(retryOptions).toEqual({
+      enableHighAccuracy: false,
+      maximumAge: 60000,
+      timeout: 60000
+    });
+    expect(screen.getByText("Gravando...")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Gravar áudio" })).toBeEnabled();
+  });
+
+  it("stops capture when geolocation permission is denied", async () => {
+    setAuthenticatedSession();
+    serviceMocks.listMyRoutes.mockResolvedValue([finishedRoute, publishedRoute]);
+    installGeolocationMock((_success, error) => {
+      error?.({
+        code: 1,
+        message: "denied",
+        PERMISSION_DENIED: 1,
+        POSITION_UNAVAILABLE: 2,
+        TIMEOUT: 3
+      } as GeolocationPositionError);
+      return 1;
+    });
+
+    renderRoute("/routes/new", "/routes/new", <CaptureRoutePage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Expandir painel de captura" }));
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar gravação" }));
+
+    await waitFor(() => expect(serviceMocks.createRoute).toHaveBeenCalled());
+    expect(await screen.findByText("Permita o acesso à localização no navegador para gravar a rota.")).toBeInTheDocument();
+    expect(screen.getByText("Parado")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Gravar áudio" })).not.toBeInTheDocument();
+  });
+
+  it("records audio after a network geolocation fix on desktop", async () => {
+    setAuthenticatedSession();
+    serviceMocks.listMyRoutes.mockResolvedValue([finishedRoute, publishedRoute]);
+    vi.spyOn(geolocationCapture, "detectCaptureGeolocationProfile").mockReturnValue("desktop");
+
+    let watchCalls = 0;
+    installGeolocationMock((success, error) => {
+      watchCalls += 1;
+      if (watchCalls === 1) {
+        error?.({
+          code: 3,
+          message: "timeout",
+          PERMISSION_DENIED: 1,
+          POSITION_UNAVAILABLE: 2,
+          TIMEOUT: 3
+        } as GeolocationPositionError);
+        return 1;
+      }
+      success(sampleGeolocationPosition());
+      return 12;
+    });
+
+    const trackStop = vi.fn();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getTracks: () => [{ stop: trackStop }]
+        })
+      }
+    });
+    const audioBlob = new Blob(["audio"], { type: "audio/webm" });
+    class MockMediaRecorder {
+      state = "inactive";
+      mimeType = "audio/webm";
+      ondataavailable: ((event: BlobEvent) => void) | null = null;
+      onstop: (() => void) | null = null;
+
+      constructor(_stream: MediaStream) {}
+
+      start() {
+        this.state = "recording";
+      }
+
+      stop() {
+        this.state = "inactive";
+        this.ondataavailable?.({ data: audioBlob } as BlobEvent);
+        this.onstop?.();
+      }
+    }
+    vi.stubGlobal("MediaRecorder", MockMediaRecorder);
+
+    renderRoute("/routes/new", "/routes/new", <CaptureRoutePage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Expandir painel de captura" }));
+    fireEvent.click(screen.getByRole("button", { name: "Iniciar gravação" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Gravar áudio" })).toBeEnabled());
+
+    const micButton = screen.getByRole("button", { name: "Gravar áudio" });
+    fireEvent.pointerDown(micButton, { pointerId: 1 });
+    await screen.findByText("Gravando áudio...");
+    fireEvent.pointerUp(micButton, { pointerId: 1 });
+
+    await waitFor(() => expect(serviceMocks.uploadMedia).toHaveBeenCalledWith(expect.any(File)));
   });
 
   it("renders profile actions for an authenticated user", () => {
@@ -352,9 +603,10 @@ describe("Web views", () => {
 
     expect(await screen.findByRole("heading", { name: "Praça" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Título"), { target: { value: "Fim de tarde" } });
-    fireEvent.change(screen.getByLabelText("Publicação"), { target: { value: "Vista bonita" } });
-    fireEvent.change(screen.getByLabelText("Ou URL"), { target: { value: "https://cdn.test/foto.jpg" } });
-    fireEvent.click(screen.getByRole("button", { name: "Publicar" }));
+    fireEvent.change(screen.getByPlaceholderText("Algo incrível aconteceu aqui?"), { target: { value: "Vista bonita" } });
+    fireEvent.click(screen.getByText("Adicionar por URL"));
+    fireEvent.change(screen.getByLabelText("URL de mídia"), { target: { value: "https://cdn.test/foto.jpg" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enviar nota" }));
 
     await waitFor(() => expect(serviceMocks.createPost).toHaveBeenCalledWith({
       placeId: "place-1",
@@ -367,6 +619,43 @@ describe("Web views", () => {
     }));
   });
 });
+
+function installGeolocationMock(
+  watchPositionImpl?: (success: PositionCallback, error?: PositionErrorCallback) => number
+) {
+  const position = sampleGeolocationPosition();
+  const watchPosition = vi.fn(
+    watchPositionImpl ??
+      ((success: PositionCallback) => {
+        success(position);
+        return 12;
+      })
+  );
+  const getCurrentPosition = vi.fn((success: PositionCallback) => {
+    success(position);
+  });
+  const clearWatch = vi.fn();
+  Object.defineProperty(navigator, "geolocation", {
+    configurable: true,
+    value: { watchPosition, getCurrentPosition, clearWatch }
+  });
+  return { watchPosition, getCurrentPosition, clearWatch, position };
+}
+
+function sampleGeolocationPosition(): GeolocationPosition {
+  return {
+    coords: {
+      latitude: -29.15,
+      longitude: -51.15,
+      accuracy: 8,
+      altitude: 150,
+      speed: 1.4,
+      altitudeAccuracy: null,
+      heading: null
+    },
+    timestamp: Date.now()
+  } as GeolocationPosition;
+}
 
 function renderView(ui: ReactElement, initialPath = "/") {
   return render(

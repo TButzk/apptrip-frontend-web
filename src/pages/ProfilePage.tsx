@@ -5,7 +5,7 @@ import { listMyRoutes } from "services/routesService";
 import type { RouteDto } from "types/domain";
 
 export function ProfilePage() {
-  const { session, isAuthenticated } = useAuth();
+  const { session, isAuthenticated, logout } = useAuth();
   const [routes, setRoutes] = useState<RouteDto[]>([]);
 
   useEffect(() => {
@@ -66,6 +66,14 @@ export function ProfilePage() {
         </div>
         <span className="profile-action-chevron" aria-hidden="true">›</span>
       </Link>
+
+      <article className="card">
+        <h2>Sessão</h2>
+        <p className="muted-message">Encerre o acesso neste dispositivo.</p>
+        <button type="button" className="link-button settings-logout" onClick={logout}>
+          Sair da conta
+        </button>
+      </article>
     </section>
   );
 }
